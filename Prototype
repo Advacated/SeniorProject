@@ -9,20 +9,31 @@ import matplotlib.pyplot as plt
 data = pd.read_csv('/Users/christianrobertson/Desktop/Senior project CSv/AMZN.csv')
 data = data.set_index('Date')
 
-# Using 'Close' price for prediction
-closing_prices = data['Close'].values.reshape(-1, 1)
+# Create a Simple Moving Average (SMA) column
+data['SMA'] = data['Close'].rolling(window=5).mean()
+
+# Drop NA values (because of the moving average)
+data.dropna(inplace=True)
+
+# Scaler for 'Close' column
+close_scaler = MinMaxScaler(feature_range=(0, 1))
+close_scaled = close_scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+
+# Columns to be used for prediction
+columns_to_scale = ['Close', 'Volume', 'SMA']
+data_to_scale = data[columns_to_scale].values
 
 # Scaling data
 scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_data = scaler.fit_transform(closing_prices)
+scaled_data = scaler.fit_transform(data_to_scale)
 
-# Create dataset with 60 timesteps and 1 output
+# Create dataset with 60 timesteps and 1 output for the 'Close' price
 X, y = [], []
 for i in range(60, len(scaled_data)):
-    X.append(scaled_data[i - 60:i, 0])
+    X.append(scaled_data[i - 60:i])
     y.append(scaled_data[i, 0])
 X, y = np.array(X), np.array(y)
-X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+X = np.reshape(X, (X.shape[0], X.shape[1], len(columns_to_scale)))
 
 # Split the data (80% training, 20% testing)
 train_size = int(0.8 * len(X))
@@ -31,7 +42,7 @@ y_train, y_test = y[:train_size], y[train_size:]
 
 # Build the LSTM Model
 model = Sequential()
-model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
+model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], len(columns_to_scale))))
 model.add(Dropout(0.2))
 model.add(LSTM(units=50))
 model.add(Dropout(0.2))
@@ -49,18 +60,25 @@ print('Model Loss on Test Data:', loss)
 # Predict future prices
 n_days = 10
 predictions = []
+
+# Initialize last_known_data with the last 60 days of X_test
 last_known_data = X_test[-1]
 
 for i in range(n_days):
-    predicted_price = model.predict(last_known_data.reshape(1, -1, 1))
+    predicted_price = model.predict(last_known_data.reshape(1, 60, 3))
     predictions.append(predicted_price[0, 0])
-    last_known_data = np.append(last_known_data[1:], predicted_price)
 
-# Inverse transform to get the real prices
-predicted_prices = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
+    # Prepare the new data row with predicted price, 0 volume, and 0 SMA (placeholder values)
+    new_row = np.array([[predicted_price[0, 0], 0, 0]])
+
+    # Drop the oldest day and append the new data row
+    last_known_data = np.vstack((last_known_data[1:], new_row))
+
+# Inverse transform to get the real prices using close_scaler
+predicted_prices = close_scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
 
 # Actual closing prices for visualization
-actual_last_days = closing_prices[-n_days:]
+actual_last_days = data['Close'].values[-n_days:]
 
 # Plotting
 dates = pd.to_datetime(data.index[-n_days:])  # Last n_days dates for actual data
@@ -74,4 +92,4 @@ plt.xlabel('Date')
 plt.ylabel('Stock Price')
 plt.legend()
 plt.grid(True)
-plt.show()
+plt.show()    
